@@ -1,251 +1,307 @@
-/**
- * @file    pms.cpp
- * @brief   PRL project #1
- * @author  David Drtil <xdrtil03@stud.fit.vutbr.cz>
- * @date    2024-04-01
- * @details Implementation of Parallel Merge Sort algorithm using openMPI,
- *          capable of sorting upto 2048 numbers,
- *          due to the limitation of max. 12 processors.
- */
-
+/***
+ * @author Adam Hos <xhosad00>
+ * @file implementation of Pipeline merge sort in openMPI
+ * @brief reads unsorted input stored in file 'numbers' in the same directory. Numberes are stored as bytes with no spaces and can be generated using the num.sh script
+*/
+#include <mpi.h>
+#include <stdio.h>
 #include <iostream>
 #include <fstream>
 #include <queue>
 #include <math.h>
-#include <climits>
-#include <mpi.h>
 
-#define MY_TAG 1
-#define STOP_SIGNAL -1  //todo INT_MAX  // For signaling end of recieving
 
-void readNumbersAndPropagate(int procId, int procCnt) {
-    std::ifstream file("numbers", std::ios::in);
-    if (file.is_open()) {
-        int number;     // Temporary variable for storing numbers
-        if (procCnt == 1) {
-            while ((number = file.get()) != EOF) {
-                std::cout << number << " " << std::endl;
-                std::cout << number << " " << std::endl;
-            }
-        }
-        else {
-            while ((number = file.get()) != EOF) {
-                std::cout << number << " ";     // Print unordered sequence of numbers, 1 by 1
-                MPI_Send(&number, 1, MPI_INT, procId + 1, MY_TAG, MPI_COMM_WORLD); // Sending number to 2nd
-            }
+// floor val will be sent if the input is not of length == power of 2. It has to be out of range of input numbers
+const int FLOOR_VALUE = 300 ;
 
-            // End of file, sending stop signal to other processors
-            int recv = procId + 1;      // Receiver is next processor
-            int stop_sig = STOP_SIGNAL;
-            MPI_Send(&stop_sig, 1, MPI_INT, recv, MY_TAG, MPI_COMM_WORLD);
-            // std::cout << std::endl;
-        }
-        file.close();
-    }
-    else {
-        std::cerr << "Error: Failed to open file \"numbers\"." << std::endl;
-        MPI_Abort(MPI_COMM_WORLD, -1);
-    }
+/***
+ * @brief send one number from top queue to the dst processor 
+ * @param sendTop how many numbers were sent from top queue in last batch
+ * @param top top queue
+ * @param rank rank of this processor
+ * @param dst rank of the processor where this processor sends data
+*/
+void sendNumFromTop(int& sendTop, std::queue<int>& top,int rank, int dst) // TODO delete rank
+{
+	int num = top.front();
+	top.pop();
+	++sendTop;
+	MPI_Send(&num, 1, MPI_INT, dst, 0, MPI_COMM_WORLD);
 }
 
-// void sendNumbersToNext() {
-
-// }
-
-void printQueueData(std::queue<int> q) {
-    std::queue<int> tempQueue = q;
-    // std::cout << " elems: ";
-    while (!tempQueue.empty()) {
-        std::cout << "[" << tempQueue.front() << "] "; // Print the front element
-        tempQueue.pop(); // Remove the front element
-    }
-    std::cout << std::endl;
+/***
+ * @brief send one number from bottom queue to the dst processor 
+ * @param sendBottom how many numbers were sent from bottom queue in last batch
+ * @param bottom bottom queue
+ * @param rank rank of this processor
+ * @param dst rank of the processor where this processor sends data
+*/
+void sendNumFromBottom(int& sendBottom, std::queue<int>& bottom,int rank, int dst) // TODO delete rank
+{
+	int num = bottom.front();
+	bottom.pop();
+	++sendBottom;
+	MPI_Send(&num, 1, MPI_INT, dst, 0, MPI_COMM_WORLD);
 }
 
-void sendNumberToNextProcessor(int procId, bool& sendingEnabled, int& sentFromLine1, int& sentFromLine2, int lineLength, std::queue<int>& line1, std::queue<int>& line2) {
-    if (sendingEnabled) {
-        // Sending number to next processor
-		//std::cout << "[" << procId << "] sending "; // << sentFromLine1 << " " << sentFromLine2 << " "<< line1.size() << " "<< line2.size() << "\n";
-        int reciever = procId + 1;
-			std::cout << " [" << procId << "] sending " << sentFromLine1 << " " << sentFromLine2 << " "<< line1.size() << " "<< line2.size() << " "<< lineLength<< "\n";
-        if (sentFromLine1 != lineLength && sentFromLine2 != lineLength) {
-            // Both lines can send numbers to next processor
-            if (!line1.empty() && !line2.empty()) {
-                if (line1.front() < line2.front()) {
-                    MPI_Send(&line1.front(), 1, MPI_INT, reciever, MY_TAG, MPI_COMM_WORLD);
-                    line1.pop();
-                    sentFromLine1++;
-					std::cout << " [" << procId << "] sending " << sentFromLine1 << " " << sentFromLine2 << " "<< line1.size() << " "<< line2.size() << "\n";
-                }
-                else {
-                    MPI_Send(&line2.front(), 1, MPI_INT, reciever, MY_TAG, MPI_COMM_WORLD);
-                    line2.pop();
-                    sentFromLine2++;
-                }
-            }
-            else if (!line1.empty() && line2.empty()) {  // todo zkusit vymazat
-                MPI_Send(&line1.front(), 1, MPI_INT, reciever, MY_TAG, MPI_COMM_WORLD);
-                line1.pop();
-                sentFromLine1++;
-            }
-            else if (line1.empty() && !line2.empty()) {     // todo zkusit vymazat
-            // else {   // todo
-                MPI_Send(&line2.front(), 1, MPI_INT, reciever, MY_TAG, MPI_COMM_WORLD);
-                line2.pop();
-                sentFromLine2++;
-            }
-        }
-        else if (sentFromLine1 == lineLength && sentFromLine2 != lineLength) {
-            MPI_Send(&line2.front(), 1, MPI_INT, reciever, MY_TAG, MPI_COMM_WORLD);
-            line2.pop();
-            sentFromLine2++;
-        }
-        else if (sentFromLine1 != lineLength && sentFromLine2 == lineLength) {
-            MPI_Send(&line1.front(), 1, MPI_INT, reciever, MY_TAG, MPI_COMM_WORLD);
-            line1.pop();
-            sentFromLine1++;
-        }
-        if (sentFromLine1 == lineLength && sentFromLine2 == lineLength) {
-            sendingEnabled = false;
-            sentFromLine1 = 0;
-            sentFromLine2 = 0;
-        }
-    }
+/***
+ * @brief send one number from queues to the dst processor based. Number is selected by Pipeline merge sort alg.
+ * @param sendTop how many numbers were sent from top queue in last batch
+ * @param sendBottom how many numbers were sent from bottom queue in last batch
+ * @param startSortingAt when can the processor start sorting 
+ * @param top top queue
+ * @param bottom bottom queue
+ * @param rank rank of this processor
+ * @param dst rank of the processor where this processor sends data
+ * @return return true if batch was finished
+*/
+bool sendNum(int& sendTop, int& sendBottom, const int startSortingAt, std::queue<int>& top,std::queue<int>& bottom, int rank,  int dst) // TODO delete rank
+{
+	if (sendTop == startSortingAt) // allready sent all numbers from top queue in this batch
+	{
+		sendNumFromBottom(sendBottom, bottom, rank, dst);
+	}
+	else if (sendBottom == startSortingAt) // allready sent all numbers from bottom queue in this batch
+	{
+		sendNumFromTop(sendTop, top, rank, dst);
+	}
+	else if (top.front() <= bottom.front()) // decide witch is lower
+	{
+		sendNumFromTop(sendTop, top, rank, dst);
+	}
+	else
+	{
+		sendNumFromBottom(sendBottom, bottom, rank, dst);
+	}
 
-    // todo toto potom obnovit
-    // else if ((line1.empty() && line2.size() == 1)
-    //     || (line2.empty() && line1.size() == 1)) {
-    //     // Send stop signal to next processor, last number was sent
-    //     int stop_sig = STOP_SIGNAL;
-    //     MPI_Send(&stop_sig, 1, MPI_INT, procId+1, MY_TAG, MPI_COMM_WORLD);
-    // }
+	if (sendTop + sendBottom == startSortingAt * 2) // finished batch, reset counters
+	{
+		sendTop = 0;
+		sendBottom = 0;
+		return true;
+	}
+	return false;
 }
 
-void printRemainingLines(bool sendingEnabled, std::queue<int>& line1, std::queue<int>& line2) {
-    if (sendingEnabled) {
-        if (!line1.empty() && !line2.empty()) {
-            if (line1.front() < line2.front()) {
-                std::cout << line1.front() << std::endl;
-                line1.pop();
-            }
-            else {
-                std::cout << line2.front() << std::endl;
-                line2.pop();
-            }
-        }
-        else if (!line1.empty() && line2.empty()) {
-            std::cout << line1.front() << std::endl;
-            line1.pop();
-        }
-        else {
-            std::cout << line2.front() << std::endl;
-            line2.pop();
-        }
-    }
+
+/***
+ * @brief send all numbers in this batch
+ * @param sendTop how many numbers were sent from top queue in last batch
+ * @param sendBottom how many numbers were sent from bottom queue in last batch
+ * @param startSortingAt when can the processor start sorting 
+ * @param top top queue
+ * @param bottom bottom queue
+ * @param rank rank of this processor
+ * @param dst rank of the processor where this processor sends data
+*/
+void sendAll(int& sendTop, int& sendBottom, const int startSortingAt, std::queue<int>& top,std::queue<int>& bottom, int rank, int dst)
+{
+	if (sendTop != 0 || sendBottom != 0)
+	{
+		bool ret;
+		do  // send the rest
+		{
+			ret = sendNum(sendTop, sendBottom, startSortingAt, top, bottom, rank, dst);
+		} while (!ret);
+	}
 }
 
-void recieveNumbersFromPrev(int procId, int procCnt) {
+void flushNum(std::queue<int>& top,std::queue<int>& bottom, int rank,  int dst)
+{
+	bool sendTop = true;
+	if (top.empty()) // allready sent all numbers from top queue in this batch
+	{
+		sendTop = false;
+	}
+	else if (bottom.empty()) // allready sent all numbers from bottom queue in this batch
+	{
+		sendTop = true;
+	}
+	else if (top.front() <= bottom.front()) // decide witch is lower
+	{
+		sendTop = true;
+	}
+	else
+	{
+		sendTop = false;
+	}
+
+	if(sendTop)
+	{		
+		int num = top.front();
+		top.pop();
+		MPI_Send(&num, 1, MPI_INT, dst, 0, MPI_COMM_WORLD);
+	}
+	else
+	{
+		int num = bottom.front();
+		bottom.pop();
+		MPI_Send(&num, 1, MPI_INT, dst, 0, MPI_COMM_WORLD);
+	}
+}
+
+/***
+ * @brief the processor recieved FLOOR_VALUE, sort all values and send them (including FLOOR_VALUE). Also process last batch of numbers if needed
+ * @param sendTop how many numbers were sent from top queue in last batch
+ * @param sendBottom how many numbers were sent from bottom queue in last batch
+ * @param startSortingAt when can the processor start sorting 
+ * @param top top queue
+ * @param bottom bottom queue
+ * @param rank rank of this processor
+ * @param dst rank of the processor where this processor sends data
+*/
+void flushQueues(int& sendTop, int& sendBottom, const int startSortingAt, std::queue<int>& top,std::queue<int>& bottom, int rank, int dst) // TODO delete rank
+{
+	int remainingInBatch = startSortingAt * 2 - (sendTop + sendBottom);
+	int diff = remainingInBatch - top.size() - bottom.size();
+	if (diff < 0) // send all in remaining batch
+		sendAll(sendTop, sendBottom, startSortingAt, top, bottom, rank, dst);
 	
-	std::cout << "ProcId[" << procId << "] Line1_size: \n";
-    std::queue<int> line1 = {};
-    std::queue<int> line2 = {};
-
-    int lineLength = pow(2, procId-1);
-    int sentFromLine1 = 0;
-    int sentFromLine2 = 0;
-    int recvToLine1 = 0;
-    int recvToLine2 = 0;
-    bool recievingEnabled = true;
-    bool sendingEnabled = false;
-    int number;
-    int sender = procId - 1;    // Sender was previous processor
-
-    // while (recievingEnabled || !line1.empty() || !line2.empty()) {  // todo
-	int t = 0;
-    while (recievingEnabled || !(line1.empty() && line2.empty())) {
-        if (recievingEnabled) {
-            MPI_Status status;
-            MPI_Recv(&number, 1, MPI_INT, sender, MY_TAG, MPI_COMM_WORLD, &status);
-            if (number == STOP_SIGNAL) {
-                recievingEnabled = false;
-            }
-            else {
-                if (recvToLine1 < lineLength) {
-                    line1.push(number);
-                    recvToLine1++;
-                }
-                else if (recvToLine2 < lineLength) {
-                    line2.push(number);
-                    recvToLine2++;
-                }
-                if (recvToLine1 == lineLength && recvToLine2 == 1) {
-                    sendingEnabled = true;
-                }
-                if (recvToLine1 == lineLength && recvToLine2 == lineLength) {
-                    recvToLine1 = 0;
-                    recvToLine2 = 0;
-                }
-            }
-        }
-
-        // std::cout << "ProcId[" << procId << "] Line1_size: " << line1.size() << " ";
-        // printQueueData(line1);
-        // std::cout << "ProcId[" << procId << "] Line2_size: " << line2.size() << " ";
-        // printQueueData(line2);
-
-        bool notLast = procId != procCnt - 1;
-        if (notLast) {
-            // Middle processor
-			t++;
-			if (t >5)
-				break;
-			std::cout << "[" << procId << "] " << sentFromLine1 << " " << sentFromLine2 << " "<< line1.size() << " "<< line2.size() << " "<< lineLength<< "\n";
-            sendNumberToNextProcessor(procId, sendingEnabled, sentFromLine1, sentFromLine2, lineLength, line1, line2);
-        }
-        else {
-            // Last processor
-            // printRemainingLines(sendingEnabled, line1, line2);
-        }
-
-        // std::cout << "ProcId[" << procId << "] Line1_size: " << line1.size() << " ";
-        // printQueueData(line1);
-        // std::cout << "ProcId[" << procId << "] Line2_size: " << line2.size() << " ";
-        // printQueueData(line2);
-    }
-
-    // todo toto smazat!
-    if (procId != procCnt - 1) {
-        int stop_sig = STOP_SIGNAL;
-        MPI_Send(&stop_sig, 1, MPI_INT, procId+1, MY_TAG, MPI_COMM_WORLD);
-    }
+	// send the last incomplete batch with FLOOR_VALUE
+	int i = 0;
+	int remaining = top.size() + bottom.size();
+	for (int k = 0; k < remaining; ++k)
+	{
+		flushNum(top, bottom, rank, dst);
+	} 
 }
 
-int main(int argc, char **argv){
-    int procId, procCnt;
-    MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &procId);     // Get the rank of the current processor
-    MPI_Comm_size(MPI_COMM_WORLD, &procCnt);    // Get the processors count
+/***
+ * @brief check if number is a power of two
+ * @param x number
+*/
+bool isPowerOfTwo(int x) 
+{
+	if (x == 0)
+		return false;
+    return (x & (x - 1)) == 0;
+}
 
-    if (procId == 0) {
-        // 1st processor reads numbers from input file and sends them to 2nd processor
-        readNumbersAndPropagate(procId, procCnt);
-    }
-    else {
-        // Other processors perform sorting
-    	// if (procId == 0) {
-		if (procId == 1)
-        	recieveNumbersFromPrev(procId, procCnt);
-    }
-    // todo
-    // else if (procId != procCnt - 1) {
-    //     // Other processors perform sorting
-    //     sortNumbers(procId, procCnt);
-    // }
-    // else {
-    //     // Last processor receives sorted numbers
-    //     receiveSortedNumbers(procId, procCnt);
-    // }
+int main(int argc, char** argv) {
+	// MPI init
+	MPI_Init (&argc, &argv);
+	int world_size, rank;
+	MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    MPI_Finalize();
-    return 0;
+	// max file input length for this amount of processors
+	const int maxInputLength = pow(2, world_size - 1);
+	const int lastRank = world_size - 1;	// rank of last processor
+
+	// printf("Rank %d out of %d processors\n", rank, world_size);
+	
+	int seenCnt = 0; // how many nubers did the process see
+	if (rank == 0) // first processor, sends numbers and prints data
+	{
+		std::ifstream file("numbers", std::ios::binary); // Open file in binary mode
+		if (!file) 
+		{
+			std::cerr << "Failed to open file." << std::endl; 
+		}
+
+		//read data from file
+		char numRead;
+		std::queue<int> numAll;
+		while (file.read(&numRead, sizeof(numRead))) 
+		{
+			int num = (int)(unsigned char)numRead; // convert char -> usigned char -> int
+			numAll.push(num);
+			MPI_Send(&num, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);	// send to next processor
+		}
+		file.close();
+		int len = numAll.size();
+
+		
+		//print input
+		int lastNum = numAll.back();
+		while (!numAll.empty())
+		{
+			int n = numAll.front();
+			std::cout << (int)n;
+			if (n != lastNum)
+				std::cout << " "; 
+			numAll.pop();
+		}
+		std::cout << "\n";
+		
+		// send floor val if input len != power of two
+		if (!isPowerOfTwo(len))
+		{
+			MPI_Send(&FLOOR_VALUE, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);
+		}
+
+
+		// receive data from last processor
+		int seenNumbers = 0, recvNum;
+		do
+		{	
+			MPI_Recv(&recvNum, 1, MPI_INT, lastRank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);	
+			std::cout << recvNum << "\n";
+
+			++seenNumbers;
+		} while (seenNumbers < len);
+
+
+	}
+	else // sorting processors
+	{
+		// processor with rank != 1
+		int seenNumbers = 0, batchSeen = 0;
+		const int startSortingAt = pow(2, rank - 1); // can start when first queue is at 2^(i - 1) elements
+		bool waitingForNumbers = true;
+		std::queue<int> top, bottom;
+		int sendTop = 0, sendBottom = 0;
+		int dst = rank + 1;	// who is the next processor
+		if (rank == lastRank)
+			dst = 0;
+
+		int recvNum = 0;
+		bool flushed = false;
+		do
+		{	
+			MPI_Recv(&recvNum, 1, MPI_INT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE); // receive num from previous
+			if (recvNum == FLOOR_VALUE) // Got floor value, push it to bottom and flush queues
+			{
+				bottom.push(FLOOR_VALUE);
+				flushed = true;
+				break;
+			}
+			if (batchSeen < startSortingAt) //add to top queue until seen startSortingAt amount
+			{
+				top.push(recvNum);
+			}
+			else	// push to bottom queue 
+			{
+				waitingForNumbers = false; // set flag for batch processing
+				bottom.push(recvNum);
+			}
+			++batchSeen;
+
+			if (!waitingForNumbers ) // process batch of numbers where size(batch) == 2 * startSortingAt 
+			{						 // elements from bottom queue do not have to be received allready, they can come later
+				sendNum(sendTop, sendBottom, startSortingAt, top, bottom,rank , dst);
+			}
+			if (batchSeen == startSortingAt * 2) // processed complete batch, reset
+			{
+				batchSeen = 0;
+			}
+			++seenNumbers;
+		} while (seenNumbers < maxInputLength); // until seen all numbers 
+
+		if (!flushed)	// didnt flush, input is of size 2^n
+		{
+			if (top.size() != 0 || bottom.size() != 0 ) // send the rest if some remain
+			{
+				sendAll(sendTop, sendBottom, startSortingAt, top, bottom, rank, dst);
+			}
+		}
+		else
+		{
+			// handle sending with FLOOR_VALUE
+			flushQueues(sendTop, sendBottom, startSortingAt, top, bottom, rank, dst);
+		}
+	}
+
+	// end process
+	MPI_Finalize();
 }
